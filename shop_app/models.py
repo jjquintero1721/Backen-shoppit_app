@@ -8,6 +8,7 @@ class Product(models.Model):
                  ("Comidas", "COMIDAS"),
                  ("Ropa", "ROPA")
                  )
+    objects = models.Manager()
     name = models.CharField(max_length=100)
     slug = models.SlugField(blank=True, null=True)
     image = models.ImageField(upload_to="img")
@@ -16,7 +17,7 @@ class Product(models.Model):
     category = models.CharField(max_length=15, choices=CATEGORY, blank=True, null=True)
     
     def __str__(self):
-        return self.name
+        return str(self.name)
     
     def save(self, *args, **kwargs):
         
@@ -35,15 +36,15 @@ class Cart(models.Model):
     cart_code = models.CharField(max_length=11, unique=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, blank=True, null=True)
     paid = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True, null= True)
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null= True)
     modified_at = models.DateTimeField(auto_now=True, blank=True , null=True)
     
     def __str__(self):
-        return self.cart_code
+        return str(self.cart_code)
     
 
 class CartItem(models.Model):
-    cart = models.ForeignKey(Cart, related_name="items", on_delete=models.CASCADE)
+    cart = models.ForeignKey(Cart, related_name='items', on_delete=models.CASCADE)
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.IntegerField(default=1)
     
