@@ -2,7 +2,7 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .models import Product, Cart, CartItem
+from .models import Product, Cart, CartItem, Transaction
 from .serializers import ProductSerializer, DetailedProductSerializer,UserSerializer , CartItemSerializer, SimpleCartSerializer, \
     CartSerializer
 from rest_framework import status
@@ -16,6 +16,9 @@ from django.conf import settings
 from core.models import CustomUser
 
 from .serializers import DetailedProductSerializer
+
+
+BASE_URL = "http://localhost:5173"
 
 # Create your views here.
 @api_view(['GET'])
@@ -112,3 +115,65 @@ def user_info(request):
     user = request.user
     serializer = UserSerializer(user)
     return Response(serializer.data)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def initiate_payment(request):
+    if request.user:
+        try:
+            tx_ref = str(uuid.uuid4())
+            cart_code = request.data.get("cart_code")
+            cart = Cart.objects.get(cart_code=cart_code)
+            user= request.user
+            
+            amount =sum([item.quantity * item.product.price for item in cart.items.all()])
+            tax = Decimal("4.00")
+            total_amount = amount + tax
+            currency = "NGN"
+            redirect_url = f"{BASE_URL}/payment-status/"
+            
+            transaction = Transaction.objects.create(
+                ref=tx_ref,
+                cart=cart,
+                amount=total_amount,
+                currency=currency,
+                user=user,
+                status='pending'
+            )
+            
+            flutterwave_payload = {
+                "tx_ref": tx_ref,
+                "amount": str(total_amount),
+                "currency": currency,
+                "redirect_url": redirect_url,
+                "customer" : {
+                    "email": user.email,
+                    "username": user.username,
+                    "phonenumber": user.phone
+                },
+                "customizations": {
+                    "title": "PulseBeat Tech Payment"
+                }
+            }
+            
+            
+            headers = {
+                "Authorization": f"Bearer {settings.FLUTTERWAVE_SECRET_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            
+            response = requests.post(
+                'https://api.flutterwave.com/v3/payments',
+                json=flutterwave_payload,
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                return Response(response.json(), status=status.HTTP_200_OK)
+            else:
+                return Response(response.json(), status=response.status_code)
+
+        except requests.exceptions.RequestException as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
