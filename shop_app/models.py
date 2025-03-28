@@ -5,8 +5,7 @@ from django.conf import settings
 class Product(models.Model):
     
     CATEGORY =  (("Electronicos", "ELECTRONICOS"),
-                 ("Comidas", "COMIDAS"),
-                 ("Ropa", "ROPA")
+                 ("Juegos", "JUEGOS")
                  )
     objects = models.Manager()
     name = models.CharField(max_length=100)

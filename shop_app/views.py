@@ -310,4 +310,59 @@ def paypal_payment_callback(request):
     
     else:
         return Response({"error": "invalid payment details."}, status=400)
-        
+
+@api_view(["POST"])
+def register_user(request):
+    try:
+        # Extraer los datos del usuario del request
+        username = request.data.get('username')
+        email = request.data.get('email')
+        password = request.data.get('password')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+
+        # Verificar si el usuario ya existe
+        if CustomUser.objects.filter(username=username).exists():
+            return Response(
+                {"error": "Username already exists. Please choose a different one."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if CustomUser.objects.filter(email=email).exists():
+            return Response(
+                {"error": "Email already in use. Please use a different email or login."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Crear el nuevo usuario
+        user = CustomUser.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            first_name=first_name,
+            last_name=last_name
+        )
+
+        # Puedes añadir datos adicionales si son proporcionados
+        if request.data.get('phone'):
+            user.phone = request.data.get('phone')
+        if request.data.get('address'):
+            user.address = request.data.get('address')
+        if request.data.get('city'):
+            user.city = request.data.get('city')
+        if request.data.get('state'):
+            user.state = request.data.get('state')
+
+        user.save()
+
+        # Devuelve una respuesta exitosa
+        return Response(
+            {"success": "User registered successfully! Please login with your credentials."},
+            status=status.HTTP_201_CREATED
+        )
+
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

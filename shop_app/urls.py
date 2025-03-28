@@ -15,7 +15,8 @@ urlpatterns = [
     path("initiate_payment/", views.initiate_payment, name="initiate_payment"),
     path("payment_callback/", views.payment_callback, name="payment_callback"),
     path("initiate_paypal_payment/", views.initiate_paypal_payment, name="initiate_paypal_payment"),
-    path("paypal_payment_callback/", views.paypal_payment_callback, name="paypal_payment_callback")
+    path("paypal_payment_callback/", views.paypal_payment_callback, name="paypal_payment_callback"),
+     path('register/', views.register_user, name='register_user')
 ]
 
 
