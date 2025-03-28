@@ -15,10 +15,14 @@ import paypalrestsdk
 from django.conf import settings
 from core.models import CustomUser
 
-from .serializers import DetailedProductSerializer
 
+BASE_URL = settings.REACT_BASE_URL
 
-BASE_URL = "http://localhost:5173"
+paypalrestsdk.configure({
+    "mode": settings.PAYPAL_MODE,
+    "client_id": settings.PAYPAL_CLIENT_ID,
+    "client_secret": settings.PAYPAL_CLIENT_SECRET
+})
 
 # Create your views here.
 @api_view(['GET'])
@@ -152,7 +156,7 @@ def initiate_payment(request):
                     "phonenumber": user.phone
                 },
                 "customizations": {
-                    "title": "PulseBeat Tech Payment"
+                    "title": "A.I.A.G Payment"
                 }
             }
             
@@ -177,3 +181,133 @@ def initiate_payment(request):
         except requests.exceptions.RequestException as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
+    
+@api_view(["POST"])
+def payment_callback(request):
+    status = request.GET.get("status")
+    tx_ref = request.GET.get("tx_ref")
+    transaction_id = request.GET.get("transaction_id")
+
+    user = request.user
+
+    if status == "successful":
+        # Verify the transaction using Flutterwave's API
+        headers = {
+            "Authorization": f"Bearer {settings.FLUTTERWAVE_SECRET_KEY}"
+        }
+
+        response = requests.get(f"https://api.flutterwave.com/v3/transactions/{transaction_id}/verify", headers=headers)
+        response_data = response.json()
+
+        if response_data["status"] == "success":
+            transaction = Transaction.objects.get(ref=tx_ref)
+
+            # Confirm the transaction details
+            if(response_data['data']['status'] == "successful"
+                    and float(response_data['data']['amount']) == float(transaction.amount)
+                    and response_data['data']['currency'] == transaction.currency):
+                # Update transaction and cart status to paid
+                transaction.status = "completed"
+                transaction.save()
+
+                cart = transaction.cart
+                cart.paid = True
+                cart.user = user
+                cart.save()
+
+                return Response({'message': 'Payment succesful!', 'subMessage': 'You have succesfully made payment for items you purchased!'})
+            else:
+                # Payment verification failed
+                return Response({'message': 'Payment verification failed.', 'subMessage': 'Your payment verification failed.'})
+        else:
+            return Response({'message': 'Failed to verify transaction with Flutterwave.', 'subMessage': 'We could not verify transaction with Flutterwave.'})
+    else:
+        # Payment was not successful
+        return Response({'message': 'Payment was not succesful.'}, status=400)
+
+@api_view(["POST"])
+def initiate_paypal_payment(request):
+    if request.method == "POST" and request.user.is_authenticated:
+        tx_ref = str(uuid.uuid4())
+        user = request.user
+        cart_code = request.data.get('cart_code')
+        cart = Cart.objects.get(cart_code=cart_code)
+        amount = sum(item.product.price * item.quantity for item in cart.items.all())
+        tax = Decimal("4.00")
+        total_amount = amount + tax
+
+        # Create a PayPal payment object
+        payment = paypalrestsdk.Payment({
+            "intent": "sale",
+            "payer": {
+                "payment_method": "paypal"
+            },
+            "redirect_urls": {
+                "return_url": f"{BASE_URL}/payment-status?paymentStatus=success&ref={tx_ref}",
+                "cancel_url": f"{BASE_URL}/payment-status?paymentStatus=cancel"
+            },
+            "transactions": [{
+                "item_list": {
+                    "items": [{
+                        "name": "Cart Items",
+                        "sku": "cart",
+                        "price": str(total_amount),
+                        "currency": "USD",
+                        "quantity": 1
+                    }]
+                },
+                "amount": {
+                    "total": str(total_amount),
+                    "currency": "USD"
+                },
+                "description": "Payment for cart items."
+            }]
+        })
+
+        print("pay_id", payment)
+
+        transaction, created = Transaction.objects.get_or_create(
+            ref=tx_ref,
+            cart=cart,
+            amount=total_amount,
+            user=user,
+            status="pending"
+        )
+
+        if payment.create():
+            for link in payment.links: 
+                if link in payment.links:
+                    if link.rel == 'approval_url':
+                        approval_url = str(link.href)
+                        return Response({"approval_url": approval_url})
+        else:
+            return Response({'error': payment.error}, status=400)
+
+@api_view(['POST'])
+def paypal_payment_callback(request):
+    payment_id = request.query_params.get('paymentId')
+    payer_id = request.query_params.get('PayerID')
+    ref = request.query_params.get('ref')
+    
+    user = request.user
+    
+    print("refff", ref)
+    
+    transaction = Transaction.objects.get(ref=ref)
+    
+    if payment_id and payer_id:
+        
+        payment = paypalrestsdk.Payment.find(payment_id)
+        
+        transaction.status= 'completed'
+        transaction.save()
+        cart = transaction.cart
+        cart.paid = True
+        cart.user = user
+        cart.save()
+        
+        return Response({'message': 'Payment succesful', 'subMessage': 'You have successfully made payment for the items you purchased'})
+    
+    else:
+        return Response({"error": "invalid payment details."}, status=400)
+        
