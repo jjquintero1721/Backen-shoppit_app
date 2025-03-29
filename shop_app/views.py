@@ -3,16 +3,15 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .models import Product, Cart, CartItem, Transaction
-from .serializers import ProductSerializer, DetailedProductSerializer,UserSerializer , CartItemSerializer, SimpleCartSerializer, \
+from .serializers import ProductSerializer, DetailedProductSerializer, UserSerializer, CartItemSerializer, SimpleCartSerializer, \
     CartSerializer
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from django.db import models  # Añadido para consultas Q
 from django.conf import settings
 from decimal import Decimal
 import uuid
 import requests
 import paypalrestsdk
-from django.conf import settings
 from core.models import CustomUser
 
 
@@ -366,3 +365,65 @@ def register_user(request):
             {"error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+        
+# Añadir este import en la parte superior del archivo
+from django.db.models import Q
+import re
+
+@api_view(['GET'])
+def search_products(request):
+    """
+    Búsqueda inteligente de productos con sugerencias relacionadas
+    """
+    query = request.query_params.get('q', '').strip()
+    
+    if not query:
+        return Response({'results': [], 'related': []})
+    
+    # Dividir la consulta en términos individuales y filtrar palabras cortas
+    search_terms = [term.lower() for term in re.findall(r'\w+', query) if len(term) > 2]
+    
+    # Construir consulta para búsqueda
+    query_filter = Q()
+    for term in search_terms:
+        # Búsqueda en nombre (mayor peso)
+        name_filter = Q(name__icontains=term)
+        # Búsqueda en descripción (peso medio)
+        desc_filter = Q(description__icontains=term)
+        # Búsqueda en categoría (peso medio-alto)
+        category_filter = Q(category__icontains=term)
+        
+        # Combinar filtros con OR
+        query_filter |= name_filter | desc_filter | category_filter
+    
+    # Obtener resultados directos
+    direct_results = Product.objects.filter(query_filter).distinct()
+    
+    # Si no hay resultados directos o hay pocos, buscar productos relacionados
+    related_products = []
+    
+    if direct_results.count() <= 5:
+        # Construir lista de categorías de los resultados principales
+        result_categories = set(direct_results.values_list('category', flat=True))
+        
+        # Buscar productos en las mismas categorías que no son resultados directos
+        if result_categories:
+            category_filter = Q()
+            for category in result_categories:
+                if category:  # Asegurarse de que la categoría no sea None
+                    category_filter |= Q(category=category)
+                    
+            related_products = Product.objects.filter(category_filter).exclude(id__in=direct_results.values_list('id', flat=True))[:8]
+        
+        # Si no hay categorías o productos relacionados, mostrar algunos productos aleatorios
+        if not related_products:
+            related_products = Product.objects.all().order_by('?')[:8]
+    
+    # Serializar resultados
+    direct_results_serialized = ProductSerializer(direct_results, many=True).data
+    related_products_serialized = ProductSerializer(related_products, many=True).data
+    
+    return Response({
+        'results': direct_results_serialized,
+        'related': related_products_serialized
+    })

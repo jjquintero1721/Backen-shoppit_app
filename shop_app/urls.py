@@ -16,8 +16,12 @@ urlpatterns = [
     path("payment_callback/", views.payment_callback, name="payment_callback"),
     path("initiate_paypal_payment/", views.initiate_paypal_payment, name="initiate_paypal_payment"),
     path("paypal_payment_callback/", views.paypal_payment_callback, name="paypal_payment_callback"),
-     path('register/', views.register_user, name='register_user')
+    path('register/', views.register_user, name='register_user'),
+    # Añadir esta línea a las urlpatterns existentes
+path("search/", views.search_products, name="search_products"),
 ]
 
 
+#fetching all_products: http://127.0.0.1:8001/products/
+#search products: http://127.0.0.1:8001/search/?q=your_query
 #fetching all_products: http://127.0.0.1:8001/products/
