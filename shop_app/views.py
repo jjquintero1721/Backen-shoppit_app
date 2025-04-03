@@ -2,10 +2,11 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .models import Product, Cart, CartItem, Transaction
+from django.db.models import Sum
+from rest_framework import status
+from .models import Product, Cart, CartItem, Transaction,SalesSummary,ProductRequest
 from .serializers import ProductSerializer, DetailedProductSerializer, UserSerializer, CartItemSerializer, SimpleCartSerializer, \
-    CartSerializer, ProductSubmissionSerializer
-from .models import ProductSubmission  # Import the ProductSubmission model
+    CartSerializer,ProductRequestDetailSerializer,ProductRequestSerializer,SalesSummarySerializer
 from rest_framework import status
 from django.db import models  # Añadido para consultas Q
 from django.conf import settings
@@ -311,50 +312,48 @@ def paypal_payment_callback(request):
     else:
         return Response({"error": "invalid payment details."}, status=400)
 
-# shop_app/views.py (replace existing register_user function)
-
 @api_view(["POST"])
 def register_user(request):
     try:
-        # Extract user data from request
+        # Extraer los datos del usuario de la petición
         username = request.data.get('username')
         email = request.data.get('email')
         password = request.data.get('password')
         first_name = request.data.get('first_name', '')
         last_name = request.data.get('last_name', '')
-        role = request.data.get('role', 'user')  # Default to 'user' if not specified
+        role = request.data.get('role', 'user')  # Por defecto es 'user' si no se especifica
         
-        # Validate role
-        if role not in ['user', 'seller']:
+        # Validar el rol
+        if role not in ['user', 'vendor']:
             return Response(
-                {"error": "Invalid role. Must be 'user' or 'seller'"},
+                {"error": "Rol inválido. El rol debe ser 'user' o 'vendor'"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Check if user already exists
+            
+        # Verificar si el usuario ya existe
         if CustomUser.objects.filter(username=username).exists():
             return Response(
-                {"error": "Username already exists. Please choose a different one."},
+                {"error": "El nombre de usuario ya existe. Por favor, elige otro."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         if CustomUser.objects.filter(email=email).exists():
             return Response(
-                {"error": "Email already in use. Please use a different email or login."},
+                {"error": "Este email ya está en uso. Por favor, utiliza otro email o inicia sesión."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Create new user
+        # Crear el nuevo usuario
         user = CustomUser.objects.create_user(
             username=username,
             email=email,
             password=password,
             first_name=first_name,
             last_name=last_name,
-            role=role  # Set the user role
+            role=role  # Incluir el rol
         )
 
-        # Add additional data if provided
+        # Añadir datos adicionales si se proporcionan
         if request.data.get('phone'):
             user.phone = request.data.get('phone')
         if request.data.get('address'):
@@ -366,9 +365,9 @@ def register_user(request):
 
         user.save()
 
-        # Return success response
+        # Devolver respuesta exitosa
         return Response(
-            {"success": "User registered successfully! Please login with your credentials."},
+            {"success": "¡Usuario registrado correctamente! Por favor, inicia sesión con tus credenciales."},
             status=status.HTTP_201_CREATED
         )
 
@@ -376,7 +375,7 @@ def register_user(request):
         return Response(
             {"error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )        
+        )
 # Añadir este import en la parte superior del archivo
 from django.db.models import Q
 import re
@@ -439,185 +438,214 @@ def search_products(request):
         'related': related_products_serialized
     })
     
-    
-# shop_app/views.py (add to existing file)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def submit_product(request):
-    """API endpoint for sellers to submit a product for approval"""
-    if request.user.role != 'seller':
-        return Response({"error": "Only sellers can submit products"}, status=status.HTTP_403_FORBIDDEN)
+def submit_product_request(request):
+    """Endpoint para vendedores para enviar solicitudes de productos"""
+    user = request.user
     
-    serializer = ProductSubmissionSerializer(data=request.data)
+    # Verificar si el usuario es un vendedor
+    if user.role != 'vendor':
+        return Response(
+            {"error": "Solo los vendedores pueden enviar solicitudes de productos"},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    # Crear serializer con los datos de la solicitud
+    serializer = ProductRequestSerializer(data=request.data)
+    
     if serializer.is_valid():
-        serializer.save(seller=request.user)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Guardar la solicitud con el vendedor
+        product_request = serializer.save(vendor=user)
+        return Response(
+            {"success": "Solicitud de producto enviada correctamente", "data": serializer.data},
+            status=status.HTTP_201_CREATED
+        )
+    else:
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def seller_submissions(request):
-    """API endpoint for sellers to view their product submissions"""
-    if request.user.role != 'seller':
-        return Response({"error": "Only sellers can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+def get_vendor_product_requests(request):
+    """Endpoint para vendedores para ver sus solicitudes de productos"""
+    user = request.user
     
-    submissions = ProductSubmission.objects.filter(seller=request.user)
-    serializer = ProductSubmissionSerializer(submissions, many=True)
+    # Verificar si el usuario es un vendedor
+    if user.role != 'vendor':
+        return Response(
+            {"error": "Solo los vendedores pueden acceder a este endpoint"},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    # Obtener todas las solicitudes para este vendedor
+    product_requests = ProductRequest.objects.filter(vendor=user)
+    serializer = ProductRequestSerializer(product_requests, many=True)
+    
     return Response(serializer.data)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def admin_view_submissions(request):
-    """API endpoint for admins to view all product submissions"""
-    if not request.user.is_staff:
-        return Response({"error": "Only administrators can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+def get_all_product_requests(request):
+    """Endpoint para administradores para ver todas las solicitudes de productos"""
+    user = request.user
     
+    # Verificar si el usuario es un administrador
+    if not user.is_staff:
+        return Response(
+            {"error": "Solo los administradores pueden acceder a este endpoint"},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    # Obtener parámetro de filtro de estado
     status_filter = request.query_params.get('status', None)
     
+    # Filtrar solicitudes de productos
     if status_filter:
-        submissions = ProductSubmission.objects.filter(status=status_filter)
+        product_requests = ProductRequest.objects.filter(status=status_filter)
     else:
-        submissions = ProductSubmission.objects.all()
+        product_requests = ProductRequest.objects.all()
     
-    serializer = ProductSubmissionSerializer(submissions, many=True)
+    # Ordenar por más reciente primero
+    product_requests = product_requests.order_by('-created_at')
+    
+    serializer = ProductRequestDetailSerializer(product_requests, many=True)
     return Response(serializer.data)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def admin_review_submission(request, submission_id):
-    """API endpoint for admins to approve or reject a product submission"""
-    if not request.user.is_staff:
-        return Response({"error": "Only administrators can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+def approve_product_request(request, request_id):
+    """Endpoint para administradores para aprobar una solicitud de producto"""
+    user = request.user
+    
+    # Verificar si el usuario es un administrador
+    if not user.is_staff:
+        return Response(
+            {"error": "Solo los administradores pueden aprobar solicitudes de productos"},
+            status=status.HTTP_403_FORBIDDEN
+        )
     
     try:
-        submission = ProductSubmission.objects.get(id=submission_id)
-    except ProductSubmission.DoesNotExist:
-        return Response({"error": "Submission not found"}, status=status.HTTP_404_NOT_FOUND)
-    
-    action = request.data.get("action", "")
-    admin_notes = request.data.get("admin_notes", "")
-    
-    if action not in ["approve", "reject"]:
-        return Response({"error": "Invalid action. Must be 'approve' or 'reject'"}, status=status.HTTP_400_BAD_REQUEST)
-    
-    if action == "approve":
-        # Create a new product based on the submission
-        product = Product(
-            name=submission.name,
-            slug=submission.slug,
-            image=submission.image,
-            description=submission.description,
-            price=submission.price,
-            category=submission.category,
-            seller=submission.seller
+        product_request = ProductRequest.objects.get(id=request_id, status='pending')
+        product = product_request.approve()
+        
+        if product:
+            return Response({
+                "success": "Solicitud de producto aprobada y producto creado",
+                "product_id": product.id
+            })
+        else:
+            return Response(
+                {"error": "Error al aprobar la solicitud de producto"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    except ProductRequest.DoesNotExist:
+        return Response(
+            {"error": "Solicitud de producto no encontrada o ya procesada"},
+            status=status.HTTP_404_NOT_FOUND
         )
-        product.save()
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def reject_product_request(request, request_id):
+    """Endpoint para administradores para rechazar una solicitud de producto"""
+    user = request.user
+    
+    # Verificar si el usuario es un administrador
+    if not user.is_staff:
+        return Response(
+            {"error": "Solo los administradores pueden rechazar solicitudes de productos"},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    # Obtener notas de rechazo
+    notes = request.data.get('notes', '')
+    
+    try:
+        product_request = ProductRequest.objects.get(id=request_id, status='pending')
+        result = product_request.reject(notes)
         
-        # Update the submission
-        submission.status = "approved"
-        submission.admin_notes = admin_notes
-        submission.product = product
-        submission.save()
-        
-        return Response({
-            "message": "Submission approved and product created",
-            "submission": ProductSubmissionSerializer(submission).data,
-            "product": ProductSerializer(product).data
-        })
-    else:  # action == "reject"
-        submission.status = "rejected"
-        submission.admin_notes = admin_notes
-        submission.save()
-        
-        return Response({
-            "message": "Submission rejected",
-            "submission": ProductSubmissionSerializer(submission).data
-        })
-        
-# shop_app/views.py (add to existing file)
+        if result:
+            return Response({
+                "success": "Solicitud de producto rechazada"
+            })
+        else:
+            return Response(
+                {"error": "Error al rechazar la solicitud de producto"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    except ProductRequest.DoesNotExist:
+        return Response(
+            {"error": "Solicitud de producto no encontrada o ya procesada"},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def seller_statistics(request):
-    """API endpoint for sellers to view their sales statistics"""
-    if request.user.role != 'seller':
-        return Response({"error": "Only sellers can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+def get_vendor_sales(request):
+    """Endpoint para vendedores para ver sus estadísticas de ventas"""
+    user = request.user
     
-    # Get all products by this seller
-    products = Product.objects.filter(seller=request.user)
+    # Verificar si el usuario es un vendedor
+    if user.role != 'vendor':
+        return Response(
+            {"error": "Solo los vendedores pueden acceder a este endpoint"},
+            status=status.HTTP_403_FORBIDDEN
+        )
     
-    # Get all CartItems for these products where the cart is paid
-    cart_items = CartItem.objects.filter(product__in=products, cart__paid=True)
+    # Obtener resumen de ventas para este vendedor
+    sales_summary = SalesSummary.objects.filter(vendor=user)
     
-    # Calculate statistics
-    total_sales = sum(item.quantity * item.product.price for item in cart_items)
-    total_items_sold = sum(item.quantity for item in cart_items)
-    product_counts = {}
+    # Calcular totales
+    total_products = sales_summary.count()
+    total_quantity = sales_summary.aggregate(Sum('total_quantity'))['total_quantity__sum'] or 0
+    total_sales = sales_summary.aggregate(Sum('total_sales'))['total_sales__sum'] or 0
+    total_commission = sales_summary.aggregate(Sum('total_commission'))['total_commission__sum'] or 0
     
-    for item in cart_items:
-        product_name = item.product.name
-        if product_name in product_counts:
-            product_counts[product_name] += item.quantity
-        else:
-            product_counts[product_name] = item.quantity
-    
-    # Sort by highest selling products
-    top_products = sorted(product_counts.items(), key=lambda x: x[1], reverse=True)
-    
-    # Get sales by date
-    sales_by_date = {}
-    for item in cart_items:
-        date_str = item.cart.modified_at.strftime('%Y-%m-%d')
-        if date_str in sales_by_date:
-            sales_by_date[date_str] += item.quantity * item.product.price
-        else:
-            sales_by_date[date_str] = item.quantity * item.product.price
+    # Serializar ventas individuales por producto
+    serializer = SalesSummarySerializer(sales_summary, many=True)
     
     return Response({
-        "total_sales": total_sales,
-        "total_items_sold": total_items_sold,
-        "top_products": top_products[:10],  # Top 10 products
-        "sales_by_date": sales_by_date
+        "total_products": total_products,
+        "total_quantity": total_quantity,
+        "total_sales": str(total_sales),
+        "total_commission": str(total_commission),
+        "net_earnings": str(total_sales - total_commission),
+        "products": serializer.data
     })
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def admin_statistics(request):
-    """API endpoint for admins to view overall platform statistics"""
-    if not request.user.is_staff:
-        return Response({"error": "Only administrators can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+def get_admin_statistics(request):
+    """Endpoint para administradores para ver estadísticas de la plataforma"""
+    user = request.user
     
-    # Get all paid carts
-    paid_carts = Cart.objects.filter(paid=True)
+    # Verificar si el usuario es un administrador
+    if not user.is_staff:
+        return Response(
+            {"error": "Solo los administradores pueden acceder a este endpoint"},
+            status=status.HTTP_403_FORBIDDEN
+        )
     
-    # Get all sellers
-    sellers = CustomUser.objects.filter(role='seller')
+    # Obtener estadísticas generales
+    total_vendors = CustomUser.objects.filter(role='vendor').count()
+    total_products = Product.objects.count()
+    total_users = CustomUser.objects.filter(role='user').count()
     
-    # Calculate total platform sales
-    total_platform_sales = sum(
-        item.product.price * item.quantity 
-        for cart in paid_carts 
-        for item in cart.items.all()
-    )
+    # Estadísticas de ventas
+    total_sales = SalesSummary.objects.aggregate(Sum('total_sales'))['total_sales__sum'] or 0
+    total_commission = SalesSummary.objects.aggregate(Sum('total_commission'))['total_commission__sum'] or 0
     
-    # Calculate sales per seller
-    seller_sales = {}
-    for seller in sellers:
-        seller_products = Product.objects.filter(seller=seller)
-        seller_cart_items = CartItem.objects.filter(product__in=seller_products, cart__paid=True)
-        seller_total_sales = sum(item.quantity * item.product.price for item in seller_cart_items)
-        seller_sales[seller.username] = seller_total_sales
-    
-    # Sort by highest selling sellers
-    top_sellers = sorted(seller_sales.items(), key=lambda x: x[1], reverse=True)
-    
-    # Pending submissions count
-    pending_submissions_count = ProductSubmission.objects.filter(status='pending').count()
+    # Solicitudes recientes
+    recent_requests = ProductRequest.objects.filter(status='pending').order_by('-created_at')[:5]
+    request_serializer = ProductRequestDetailSerializer(recent_requests, many=True)
     
     return Response({
-        "total_platform_sales": total_platform_sales,
-        "top_sellers": top_sellers,
-        "total_sellers": sellers.count(),
-        "pending_submissions_count": pending_submissions_count
+        "total_vendors": total_vendors,
+        "total_products": total_products,
+        "total_users": total_users,
+        "total_sales": str(total_sales),
+        "total_commission": str(total_commission),
+        "pending_requests": ProductRequest.objects.filter(status='pending').count(),
+        "recent_requests": request_serializer.data
     })
