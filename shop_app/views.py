@@ -4,7 +4,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .models import Product, Cart, CartItem, Transaction
 from .serializers import ProductSerializer, DetailedProductSerializer, UserSerializer, CartItemSerializer, SimpleCartSerializer, \
-    CartSerializer
+    CartSerializer, ProductSubmissionSerializer
+from .models import ProductSubmission  # Import the ProductSubmission model
 from rest_framework import status
 from django.db import models  # Añadido para consultas Q
 from django.conf import settings
@@ -310,17 +311,27 @@ def paypal_payment_callback(request):
     else:
         return Response({"error": "invalid payment details."}, status=400)
 
+# shop_app/views.py (replace existing register_user function)
+
 @api_view(["POST"])
 def register_user(request):
     try:
-        # Extraer los datos del usuario del request
+        # Extract user data from request
         username = request.data.get('username')
         email = request.data.get('email')
         password = request.data.get('password')
         first_name = request.data.get('first_name', '')
         last_name = request.data.get('last_name', '')
+        role = request.data.get('role', 'user')  # Default to 'user' if not specified
+        
+        # Validate role
+        if role not in ['user', 'seller']:
+            return Response(
+                {"error": "Invalid role. Must be 'user' or 'seller'"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Verificar si el usuario ya existe
+        # Check if user already exists
         if CustomUser.objects.filter(username=username).exists():
             return Response(
                 {"error": "Username already exists. Please choose a different one."},
@@ -333,16 +344,17 @@ def register_user(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Crear el nuevo usuario
+        # Create new user
         user = CustomUser.objects.create_user(
             username=username,
             email=email,
             password=password,
             first_name=first_name,
-            last_name=last_name
+            last_name=last_name,
+            role=role  # Set the user role
         )
 
-        # Puedes añadir datos adicionales si son proporcionados
+        # Add additional data if provided
         if request.data.get('phone'):
             user.phone = request.data.get('phone')
         if request.data.get('address'):
@@ -354,7 +366,7 @@ def register_user(request):
 
         user.save()
 
-        # Devuelve una respuesta exitosa
+        # Return success response
         return Response(
             {"success": "User registered successfully! Please login with your credentials."},
             status=status.HTTP_201_CREATED
@@ -364,8 +376,7 @@ def register_user(request):
         return Response(
             {"error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-        
+        )        
 # Añadir este import en la parte superior del archivo
 from django.db.models import Q
 import re
@@ -426,4 +437,187 @@ def search_products(request):
     return Response({
         'results': direct_results_serialized,
         'related': related_products_serialized
+    })
+    
+    
+# shop_app/views.py (add to existing file)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_product(request):
+    """API endpoint for sellers to submit a product for approval"""
+    if request.user.role != 'seller':
+        return Response({"error": "Only sellers can submit products"}, status=status.HTTP_403_FORBIDDEN)
+    
+    serializer = ProductSubmissionSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save(seller=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def seller_submissions(request):
+    """API endpoint for sellers to view their product submissions"""
+    if request.user.role != 'seller':
+        return Response({"error": "Only sellers can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+    
+    submissions = ProductSubmission.objects.filter(seller=request.user)
+    serializer = ProductSubmissionSerializer(submissions, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_view_submissions(request):
+    """API endpoint for admins to view all product submissions"""
+    if not request.user.is_staff:
+        return Response({"error": "Only administrators can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+    
+    status_filter = request.query_params.get('status', None)
+    
+    if status_filter:
+        submissions = ProductSubmission.objects.filter(status=status_filter)
+    else:
+        submissions = ProductSubmission.objects.all()
+    
+    serializer = ProductSubmissionSerializer(submissions, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_review_submission(request, submission_id):
+    """API endpoint for admins to approve or reject a product submission"""
+    if not request.user.is_staff:
+        return Response({"error": "Only administrators can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        submission = ProductSubmission.objects.get(id=submission_id)
+    except ProductSubmission.DoesNotExist:
+        return Response({"error": "Submission not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+    action = request.data.get("action", "")
+    admin_notes = request.data.get("admin_notes", "")
+    
+    if action not in ["approve", "reject"]:
+        return Response({"error": "Invalid action. Must be 'approve' or 'reject'"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if action == "approve":
+        # Create a new product based on the submission
+        product = Product(
+            name=submission.name,
+            slug=submission.slug,
+            image=submission.image,
+            description=submission.description,
+            price=submission.price,
+            category=submission.category,
+            seller=submission.seller
+        )
+        product.save()
+        
+        # Update the submission
+        submission.status = "approved"
+        submission.admin_notes = admin_notes
+        submission.product = product
+        submission.save()
+        
+        return Response({
+            "message": "Submission approved and product created",
+            "submission": ProductSubmissionSerializer(submission).data,
+            "product": ProductSerializer(product).data
+        })
+    else:  # action == "reject"
+        submission.status = "rejected"
+        submission.admin_notes = admin_notes
+        submission.save()
+        
+        return Response({
+            "message": "Submission rejected",
+            "submission": ProductSubmissionSerializer(submission).data
+        })
+        
+# shop_app/views.py (add to existing file)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def seller_statistics(request):
+    """API endpoint for sellers to view their sales statistics"""
+    if request.user.role != 'seller':
+        return Response({"error": "Only sellers can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+    
+    # Get all products by this seller
+    products = Product.objects.filter(seller=request.user)
+    
+    # Get all CartItems for these products where the cart is paid
+    cart_items = CartItem.objects.filter(product__in=products, cart__paid=True)
+    
+    # Calculate statistics
+    total_sales = sum(item.quantity * item.product.price for item in cart_items)
+    total_items_sold = sum(item.quantity for item in cart_items)
+    product_counts = {}
+    
+    for item in cart_items:
+        product_name = item.product.name
+        if product_name in product_counts:
+            product_counts[product_name] += item.quantity
+        else:
+            product_counts[product_name] = item.quantity
+    
+    # Sort by highest selling products
+    top_products = sorted(product_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    # Get sales by date
+    sales_by_date = {}
+    for item in cart_items:
+        date_str = item.cart.modified_at.strftime('%Y-%m-%d')
+        if date_str in sales_by_date:
+            sales_by_date[date_str] += item.quantity * item.product.price
+        else:
+            sales_by_date[date_str] = item.quantity * item.product.price
+    
+    return Response({
+        "total_sales": total_sales,
+        "total_items_sold": total_items_sold,
+        "top_products": top_products[:10],  # Top 10 products
+        "sales_by_date": sales_by_date
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_statistics(request):
+    """API endpoint for admins to view overall platform statistics"""
+    if not request.user.is_staff:
+        return Response({"error": "Only administrators can access this endpoint"}, status=status.HTTP_403_FORBIDDEN)
+    
+    # Get all paid carts
+    paid_carts = Cart.objects.filter(paid=True)
+    
+    # Get all sellers
+    sellers = CustomUser.objects.filter(role='seller')
+    
+    # Calculate total platform sales
+    total_platform_sales = sum(
+        item.product.price * item.quantity 
+        for cart in paid_carts 
+        for item in cart.items.all()
+    )
+    
+    # Calculate sales per seller
+    seller_sales = {}
+    for seller in sellers:
+        seller_products = Product.objects.filter(seller=seller)
+        seller_cart_items = CartItem.objects.filter(product__in=seller_products, cart__paid=True)
+        seller_total_sales = sum(item.quantity * item.product.price for item in seller_cart_items)
+        seller_sales[seller.username] = seller_total_sales
+    
+    # Sort by highest selling sellers
+    top_sellers = sorted(seller_sales.items(), key=lambda x: x[1], reverse=True)
+    
+    # Pending submissions count
+    pending_submissions_count = ProductSubmission.objects.filter(status='pending').count()
+    
+    return Response({
+        "total_platform_sales": total_platform_sales,
+        "top_sellers": top_sellers,
+        "total_sellers": sellers.count(),
+        "pending_submissions_count": pending_submissions_count
     })

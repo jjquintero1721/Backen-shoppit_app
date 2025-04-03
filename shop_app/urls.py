@@ -17,6 +17,14 @@ urlpatterns = [
     path("initiate_paypal_payment/", views.initiate_paypal_payment, name="initiate_paypal_payment"),
     path("paypal_payment_callback/", views.paypal_payment_callback, name="paypal_payment_callback"),
     path('register/', views.register_user, name='register_user'),
+    path('seller/submit_product/', views.submit_product, name='submit_product'),
+    path('seller/submissions/', views.seller_submissions, name='seller_submissions'),
+    path('seller/statistics/', views.seller_statistics, name='seller_statistics'),
+
+    # Admin endpoints
+    path('admin/submissions/', views.admin_view_submissions, name='admin_view_submissions'),
+    path('admin/review_submission/<int:submission_id>/', views.admin_review_submission, name='admin_review_submission'),
+    path('admin/statistics/', views.admin_statistics, name='admin_statistics'),
     # Añadir esta línea a las urlpatterns existentes
 path("search/", views.search_products, name="search_products"),
 ]

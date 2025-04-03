@@ -1,12 +1,21 @@
 from rest_framework import serializers
-from .models import Product, Cart, CartItem
+from .models import Product, Cart, CartItem, ProductSubmission
 from django.contrib.auth import get_user_model
 
+# shop_app/serializers.py (modify existing ProductSerializer)
+
 class ProductSerializer(serializers.ModelSerializer):
+    seller_username = serializers.SerializerMethodField()
+    
     class Meta:
         model = Product
-        fields = ["id", "name", "slug", "image", "description", "price", "category"]
-
+        fields = ["id", "name", "slug", "image", "description", "price", "category", "seller", "seller_username"]
+    
+    def get_seller_username(self, obj):
+        if obj.seller:
+            return obj.seller.username
+        return None
+    
 class DetailedProductSerializer(serializers.ModelSerializer):
     similar_products = serializers.SerializerMethodField()
     class Meta:
@@ -74,13 +83,27 @@ class NewCartItemSerializer(serializers.ModelSerializer):
         order_date = cartitem.cart.modified_at
         return order_date
 
+
 class UserSerializer(serializers.ModelSerializer):
     items = serializers.SerializerMethodField()
     class Meta:
         model = get_user_model()
-        fields = ["id", "username", "first_name", "last_name", "email", "city", "state", "address", "phone", "items"]
+        fields = ["id", "username", "first_name", "last_name", "email", "city", "state", "address", "phone", "items", "role", "is_staff"]
         
     def get_items(self, user):
         cartitems = CartItem.objects.filter(cart__user=user, cart__paid=True)[:10]
         serializer = NewCartItemSerializer(cartitems, many=True)
         return serializer.data
+    
+    
+class ProductSubmissionSerializer(serializers.ModelSerializer):
+    seller_username = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ProductSubmission
+        fields = ["id", "name", "slug", "image", "description", "price", "category", 
+                  "status", "admin_notes", "submitted_at", "admin_commission", "seller", "seller_username"]
+        read_only_fields = ["status", "admin_notes", "submitted_at"]
+    
+    def get_seller_username(self, obj):
+        return obj.seller.username
